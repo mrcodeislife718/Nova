@@ -1,0 +1,17 @@
+{
+  "name": "nova-compiler",
+  "version": "0.1.0",
+  "description": "Nova compiler intelligence for Cannon and Cannon+.",
+  "type": "module",
+  "exports": "./src/index.js",
+  "bin": {
+    "nova": "./src/cli.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
