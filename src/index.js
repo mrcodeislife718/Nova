@@ -60,3 +60,4 @@ export function formatDiagnostic(diagnostic, source) {
 }
 
 export * from './compiler.js';
+export { ExactSourceMap, analyzeContracts, buildDebugMetadata, verifyDebugMetadata } from './contracts.js';
