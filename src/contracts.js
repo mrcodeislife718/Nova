@@ -138,9 +138,13 @@ export function verifyDebugMetadata(metadata, ir) {
     const expected = ir.sourceMap[index];
     if (mapping.ir !== expected.ir || JSON.stringify(mapping.span) !== JSON.stringify(expected.span)) return { ok: false, reason: `mapping mismatch at ${index}` };
   }
-  const { digest, ...body } = metadata;
-  const recalculated = crypto.createHash('sha256').update(canonical(body)).digest('hex');
-  return { ok: recalculated === digest, reason: recalculated === digest ? null : 'digest mismatch' };
+  const recalculated = crypto.createHash('sha256').update(canonical({
+    compilerVersion: metadata.compilerVersion,
+    irVersion: metadata.irVersion,
+    irKind: metadata.irKind,
+    mappings: metadata.mappings
+  })).digest('hex');
+  return { ok: recalculated === metadata.digest, reason: recalculated === metadata.digest ? null : 'digest mismatch' };
 }
 
 function findFunctionHeaders(source) {
