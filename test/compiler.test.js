@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SourceFile, InferEngine, compile, emitWasm, structuredDiagnostics } from '../src/index.js';
+import { SourceFile, InferEngine, compile, structuredDiagnostics } from '../src/index.js';
 
 test('source model returns exact line and column spans', () => {
   const file = new SourceFile('demo.cannon', 'let x = 1\nreturn x\n');
-  assert.deepEqual(file.position(10), { file: 'demo.cannon', offset: 10, line: 1, column: 11 });
-  assert.equal(file.position(11).line, 2);
+  assert.deepEqual(file.position(8), { file: 'demo.cannon', offset: 8, line: 1, column: 9 });
+  assert.deepEqual(file.position(10), { file: 'demo.cannon', offset: 10, line: 2, column: 1 });
 });
 
 test('Infer Engine handles numeric widening and nullable values', () => {
