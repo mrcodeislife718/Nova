@@ -5,10 +5,12 @@
   "type": "module",
   "exports": "./src/index.js",
   "bin": {
-    "nova": "./src/cli.js"
+    "nova": "./src/cli.js",
+    "nova-lsp": "./src/lsp-stdio.js"
   },
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "lsp": "node ./src/lsp-stdio.js"
   },
   "engines": {
     "node": ">=20"
