@@ -61,7 +61,7 @@ export function emitFrontendJavaScript(ir) {
         scopes.push(new Set(node.params));
         const body = block(node.body, level);
         scopes.pop();
-        return `${pad}function ${node.name}(${node.params.join(', ')}) ${body}`;
+        return `${pad}${node.async ? 'async ' : ''}function ${node.name}(${node.params.join(', ')}) ${body}`;
       }
       case 'if': {
         let output = `${pad}if (${expression(node.test)}) ${block(node.consequent, level)}`;
@@ -89,6 +89,7 @@ export function emitFrontendJavaScript(ir) {
       case 'object': return `{ ${node.properties.map((property) => `${JSON.stringify(property.key)}: ${expression(property.value)}`).join(', ')} }`;
       case 'member': return node.computed ? `${expression(node.object)}[${expression(node.property)}]` : `${expression(node.object)}.${node.property.name}`;
       case 'unary': return `(${node.operator}${expression(node.argument)})`;
+      case 'await': return `(await ${expression(node.argument)})`;
       case 'binary': return `(${expression(node.left)} ${node.operator === '==' ? '===' : node.operator === '!=' ? '!==' : node.operator} ${expression(node.right)})`;
       case 'call': { const callee = node.callee.kind === 'identifier' && node.callee.name === 'print' ? 'console.log' : expression(node.callee); return `${callee}(${node.args.map(expression).join(', ')})`; }
       default: throw new Error(`Nova cannot emit unsupported IR expression: ${node.kind}`);
@@ -111,7 +112,7 @@ function lowerStatement(node) {
     case 'AssignmentStatement': return { op: 'assign', target: lowerExpression(node.target), value: lowerExpression(node.value) };
     case 'ExpressionStatement': return { op: 'evaluate', value: lowerExpression(node.expression) };
     case 'ReturnStatement': return { op: 'return', value: node.value ? lowerExpression(node.value) : null };
-    case 'FunctionDeclaration': return { op: 'function', name: node.name, params: [...node.params], body: lowerBlock(node.body) };
+    case 'FunctionDeclaration': return { op: 'function', name: node.name, async: Boolean(node.async), params: [...node.params], body: lowerBlock(node.body) };
     case 'IfStatement': return { op: 'if', test: lowerExpression(node.test), consequent: lowerBlock(node.consequent), alternate: node.alternate ? (node.alternate.type === 'IfStatement' ? lowerStatement(node.alternate) : lowerBlock(node.alternate)) : null };
     case 'WhileStatement': return { op: 'while', test: lowerExpression(node.test), body: lowerBlock(node.body) };
     case 'BlockStatement': return lowerBlock(node);
@@ -127,6 +128,7 @@ function lowerExpression(node) {
     case 'ObjectExpression': return { kind: 'object', properties: node.properties.map((property) => ({ key: property.key, value: lowerExpression(property.value) })) };
     case 'MemberExpression': return { kind: 'member', object: lowerExpression(node.object), property: lowerExpression(node.property), computed: Boolean(node.computed) };
     case 'UnaryExpression': return { kind: 'unary', operator: node.operator, argument: lowerExpression(node.argument) };
+    case 'AwaitExpression': return { kind: 'await', argument: lowerExpression(node.argument) };
     case 'BinaryExpression': return { kind: 'binary', operator: node.operator, left: lowerExpression(node.left), right: lowerExpression(node.right) };
     case 'CallExpression': return { kind: 'call', callee: lowerExpression(node.callee), args: node.arguments.map(lowerExpression) };
     default: throw new Error(`Nova rejected unsupported Cannon AST expression: ${node?.type ?? 'unknown'}`);
@@ -150,9 +152,9 @@ function optimizeExpression(node) {
       const folded = foldBinary(copy.operator, copy.left.value, copy.right.value);
       if (folded.folded) return { kind: 'literal', value: folded.value };
     }
-  } else if (copy.kind === 'unary') {
+  } else if (copy.kind === 'unary' || copy.kind === 'await') {
     copy.argument = optimizeExpression(copy.argument);
-    if (copy.argument.kind === 'literal') {
+    if (copy.kind === 'unary' && copy.argument.kind === 'literal') {
       const folded = foldUnary(copy.operator, copy.argument.value);
       if (folded.folded) return { kind: 'literal', value: folded.value };
     }
