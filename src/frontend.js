@@ -15,6 +15,7 @@ export function lowerFrontendArtifact(artifact) {
   const verification = verifyCannonFrontendArtifact(artifact);
   if (!verification.ok) throw new Error(`Nova rejected Cannon frontend artifact: ${verification.reason}`);
   const body = artifact.ast.body.map(lowerStatement);
+  const dependencies = [...new Set(body.flatMap((node) => moduleDependency(node)).filter(Boolean))].sort();
   return Object.freeze({
     protocol: IR_PROTOCOL,
     version: 2,
@@ -23,8 +24,9 @@ export function lowerFrontendArtifact(artifact) {
     frontendVersion: artifact.frontendVersion,
     file: artifact.file,
     sourceDigest: artifact.sourceDigest,
+    dependencies,
     body,
-    irDigest: digest({ protocol: IR_PROTOCOL, frontendVersion: artifact.frontendVersion, file: artifact.file, sourceDigest: artifact.sourceDigest, body })
+    irDigest: digest({ protocol: IR_PROTOCOL, frontendVersion: artifact.frontendVersion, file: artifact.file, sourceDigest: artifact.sourceDigest, dependencies, body })
   });
 }
 
@@ -32,7 +34,7 @@ export function optimizeFrontendIR(ir) {
   validateIr(ir);
   const body = ir.body.map(optimizeStatement);
   const optimized = { ...structuredClone(ir), body, optimized: true };
-  optimized.irDigest = digest({ protocol: optimized.protocol, frontendVersion: optimized.frontendVersion, file: optimized.file, sourceDigest: optimized.sourceDigest, body: optimized.body, optimized: true });
+  optimized.irDigest = digest({ protocol: optimized.protocol, frontendVersion: optimized.frontendVersion, file: optimized.file, sourceDigest: optimized.sourceDigest, dependencies: optimized.dependencies ?? [], body: optimized.body, optimized: true });
   return Object.freeze(optimized);
 }
 
@@ -45,41 +47,43 @@ export function emitFrontendJavaScript(ir) {
   function statement(node, level = 0) {
     const pad = '  '.repeat(level);
     switch (node.op) {
+      case 'import': return `${pad}${emitImport(node)}`;
+      case 'export-named': {
+        if (node.declaration) return `${pad}export ${statement(node.declaration, 0).trimStart()}`;
+        const names = node.specifiers.map((s) => s.local === s.exported ? s.local : `${s.local} as ${s.exported}`).join(', ');
+        return `${pad}export { ${names} }${node.source ? ` from ${JSON.stringify(node.source)}` : ''};`;
+      }
+      case 'export-default':
+        if (node.declaration?.op === 'function') return `${pad}export default ${statement(node.declaration, 0).trimStart()}`;
+        return `${pad}export default ${expression(node.value)};`;
       case 'declare': currentScope().add(node.name); return `${pad}${node.bindingKind} ${node.name} = ${expression(node.value)};`;
       case 'assign': {
-        if (node.target.kind === 'identifier') {
-          const first = !isDeclared(node.target.name);
-          if (first) currentScope().add(node.target.name);
-          return `${pad}${first ? 'let ' : ''}${node.target.name} = ${expression(node.value)};`;
-        }
+        if (node.target.kind === 'identifier') { const first = !isDeclared(node.target.name); if (first) currentScope().add(node.target.name); return `${pad}${first ? 'let ' : ''}${node.target.name} = ${expression(node.value)};`; }
         return `${pad}${expression(node.target)} = ${expression(node.value)};`;
       }
       case 'evaluate': return `${pad}${expression(node.value)};`;
       case 'return': return `${pad}return${node.value ? ` ${expression(node.value)}` : ''};`;
-      case 'function': {
-        currentScope().add(node.name);
-        scopes.push(new Set(node.params));
-        const body = block(node.body, level);
-        scopes.pop();
-        return `${pad}${node.async ? 'async ' : ''}function ${node.name}(${node.params.join(', ')}) ${body}`;
-      }
-      case 'if': {
-        let output = `${pad}if (${expression(node.test)}) ${block(node.consequent, level)}`;
-        if (node.alternate) output += node.alternate.op === 'if' ? ` else ${statement(node.alternate, level).trimStart()}` : ` else ${block(node.alternate, level)}`;
-        return output;
-      }
+      case 'function': { currentScope().add(node.name); scopes.push(new Set(node.params)); const body = block(node.body, level); scopes.pop(); return `${pad}${node.async ? 'async ' : ''}function ${node.name}(${node.params.join(', ')}) ${body}`; }
+      case 'if': { let output = `${pad}if (${expression(node.test)}) ${block(node.consequent, level)}`; if (node.alternate) output += node.alternate.op === 'if' ? ` else ${statement(node.alternate, level).trimStart()}` : ` else ${block(node.alternate, level)}`; return output; }
       case 'while': return `${pad}while (${expression(node.test)}) ${block(node.body, level)}`;
       case 'block': return `${pad}${block(node, level)}`;
       default: throw new Error(`Nova cannot emit unsupported IR statement: ${node.op}`);
     }
   }
 
-  function block(node, level) {
-    scopes.push(new Set());
-    const content = node.body.map((entry) => statement(entry, level + 1)).join('\n');
-    scopes.pop();
-    return `{\n${content}\n${'  '.repeat(level)}}`;
+  function emitImport(node) {
+    if (!node.specifiers.length) return `import ${JSON.stringify(node.source)};`;
+    const defaults = node.specifiers.filter((s) => s.kind === 'default').map((s) => s.local);
+    const namespaces = node.specifiers.filter((s) => s.kind === 'namespace').map((s) => `* as ${s.local}`);
+    const named = node.specifiers.filter((s) => s.kind === 'named').map((s) => s.imported === s.local ? s.imported : `${s.imported} as ${s.local}`);
+    const parts = [];
+    if (defaults.length) parts.push(defaults[0]);
+    if (namespaces.length) parts.push(namespaces[0]);
+    if (named.length) parts.push(`{ ${named.join(', ')} }`);
+    return `import ${parts.join(', ')} from ${JSON.stringify(node.source)};`;
   }
+
+  function block(node, level) { scopes.push(new Set()); const content = node.body.map((entry) => statement(entry, level + 1)).join('\n'); scopes.pop(); return `{\n${content}\n${'  '.repeat(level)}}`; }
 
   function expression(node) {
     switch (node.kind) {
@@ -108,6 +112,9 @@ export function compileFrontendArtifact(artifact, { optimize = true, target = 'j
 
 function lowerStatement(node) {
   switch (node?.type) {
+    case 'ImportDeclaration': return { op: 'import', source: node.source, specifiers: node.specifiers.map((s) => ({ kind: s.type === 'ImportDefaultSpecifier' ? 'default' : s.type === 'ImportNamespaceSpecifier' ? 'namespace' : 'named', local: s.local, imported: s.imported ?? null })) };
+    case 'ExportNamedDeclaration': return { op: 'export-named', source: node.source ?? null, specifiers: (node.specifiers ?? []).map((s) => ({ local: s.local, exported: s.exported })), declaration: node.declaration ? lowerStatement(node.declaration) : null };
+    case 'ExportDefaultDeclaration': return node.declaration?.type === 'FunctionDeclaration' ? { op: 'export-default', declaration: lowerStatement(node.declaration), value: null } : { op: 'export-default', declaration: null, value: lowerExpression(node.declaration) };
     case 'VariableDeclaration': return { op: 'declare', bindingKind: node.kind, name: node.name, value: lowerExpression(node.value) };
     case 'AssignmentStatement': return { op: 'assign', target: lowerExpression(node.target), value: lowerExpression(node.value) };
     case 'ExpressionStatement': return { op: 'evaluate', value: lowerExpression(node.expression) };
@@ -134,11 +141,13 @@ function lowerExpression(node) {
     default: throw new Error(`Nova rejected unsupported Cannon AST expression: ${node?.type ?? 'unknown'}`);
   }
 }
+function moduleDependency(node) { if (node.op === 'import' || (node.op === 'export-named' && node.source)) return node.source; return null; }
 function optimizeStatement(node) {
   const copy = structuredClone(node);
   if (copy.value) copy.value = optimizeExpression(copy.value);
   if (copy.target) copy.target = optimizeExpression(copy.target);
   if (copy.test) copy.test = optimizeExpression(copy.test);
+  if (copy.declaration) copy.declaration = optimizeStatement(copy.declaration);
   if (copy.body?.body) copy.body = { ...copy.body, body: copy.body.body.map(optimizeStatement) };
   if (copy.consequent?.body) copy.consequent = { ...copy.consequent, body: copy.consequent.body.map(optimizeStatement) };
   if (copy.alternate) copy.alternate = copy.alternate.op === 'if' ? optimizeStatement(copy.alternate) : { ...copy.alternate, body: copy.alternate.body.map(optimizeStatement) };
@@ -148,16 +157,10 @@ function optimizeExpression(node) {
   const copy = structuredClone(node);
   if (copy.kind === 'binary') {
     copy.left = optimizeExpression(copy.left); copy.right = optimizeExpression(copy.right);
-    if (copy.left.kind === 'literal' && copy.right.kind === 'literal') {
-      const folded = foldBinary(copy.operator, copy.left.value, copy.right.value);
-      if (folded.folded) return { kind: 'literal', value: folded.value };
-    }
+    if (copy.left.kind === 'literal' && copy.right.kind === 'literal') { const folded = foldBinary(copy.operator, copy.left.value, copy.right.value); if (folded.folded) return { kind: 'literal', value: folded.value }; }
   } else if (copy.kind === 'unary' || copy.kind === 'await') {
     copy.argument = optimizeExpression(copy.argument);
-    if (copy.kind === 'unary' && copy.argument.kind === 'literal') {
-      const folded = foldUnary(copy.operator, copy.argument.value);
-      if (folded.folded) return { kind: 'literal', value: folded.value };
-    }
+    if (copy.kind === 'unary' && copy.argument.kind === 'literal') { const folded = foldUnary(copy.operator, copy.argument.value); if (folded.folded) return { kind: 'literal', value: folded.value }; }
   } else if (copy.kind === 'array') copy.elements = copy.elements.map(optimizeExpression);
   else if (copy.kind === 'object') copy.properties = copy.properties.map((property) => ({ ...property, value: optimizeExpression(property.value) }));
   else if (copy.kind === 'member') { copy.object = optimizeExpression(copy.object); copy.property = optimizeExpression(copy.property); }
