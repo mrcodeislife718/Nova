@@ -64,3 +64,4 @@ export { ExactSourceMap, analyzeContracts, buildDebugMetadata } from './contract
 export { verifyDebugMetadata } from './debug-metadata-verifier.js';
 export { verifyCannonFrontendArtifact, lowerFrontendArtifact, optimizeFrontendIR, emitFrontendJavaScript, compileFrontendArtifact } from './frontend.js';
 export { buildSemanticGraph, verifySemanticGraph } from './semantic-graph.js';
+export { RecoveryStore, RecoveryCorruptionError } from './disaster-recovery.js';
