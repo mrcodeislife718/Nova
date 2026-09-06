@@ -216,13 +216,46 @@ export function buildSemanticGraph(artifact) {
   return Object.freeze(graph);
 }
 
-export function verifySemanticGraph(graph) {
-  if (!graph || graph.protocol !== PROTOCOL || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) return { ok: false, reason: 'invalid Nova semantic graph' };
-  const ids = new Set(graph.nodes.map((node) => node.id));
-  for (const edge of graph.edges) if (!ids.has(edge.from) || !ids.has(edge.to)) return { ok: false, reason: `dangling semantic edge ${edge.id}` };
+export function verifySemanticGraph(graph, { frontendArtifact = null } = {}) {
+  if (!graph || graph.protocol !== PROTOCOL || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges) || !Array.isArray(graph.diagnostics)) return { ok: false, reason: 'invalid Nova semantic graph' };
+  if (typeof graph.sourceDigest !== 'string' || !graph.sourceDigest || typeof graph.file !== 'string' || !graph.file) return { ok: false, reason: 'semantic graph source identity is missing' };
+
+  if (frontendArtifact) {
+    const verification = verifyCannonFrontendArtifact(frontendArtifact);
+    if (!verification.ok) return { ok: false, reason: `invalid Cannon frontend artifact: ${verification.reason}` };
+    if (graph.sourceDigest !== frontendArtifact.sourceDigest) return { ok: false, reason: 'semantic graph source digest does not match frontend artifact' };
+    if (graph.frontendArtifactDigest !== frontendArtifact.artifactDigest) return { ok: false, reason: 'semantic graph frontend artifact digest mismatch' };
+    if (graph.file !== frontendArtifact.file) return { ok: false, reason: 'semantic graph file does not match frontend artifact' };
+  }
+
+  const ids = new Set();
+  for (const node of graph.nodes) {
+    if (!node || typeof node.id !== 'string' || typeof node.kind !== 'string' || !Array.isArray(node.astPath)) return { ok: false, reason: 'invalid semantic node' };
+    if (ids.has(node.id)) return { ok: false, reason: `duplicate semantic node id ${node.id}` };
+    const expectedNodeId = stableId(graph.sourceDigest, node.kind, node.name ?? '', node.astPath.join('.'));
+    if (node.id !== expectedNodeId) return { ok: false, reason: `semantic node identity mismatch ${node.id}` };
+    if (node.file !== graph.file) return { ok: false, reason: `semantic node file mismatch ${node.id}` };
+    ids.add(node.id);
+  }
+
+  const root = graph.nodes.find((node) => node.id === graph.rootScope);
+  if (!root || root.kind !== 'scope' || root.scopeKind !== 'program') return { ok: false, reason: 'invalid semantic root scope' };
+
+  const edgeIds = new Set();
+  for (const edge of graph.edges) {
+    if (!edge || typeof edge.id !== 'string' || typeof edge.kind !== 'string' || typeof edge.from !== 'string' || typeof edge.to !== 'string') return { ok: false, reason: 'invalid semantic edge' };
+    if (edgeIds.has(edge.id)) return { ok: false, reason: `duplicate semantic edge id ${edge.id}` };
+    if (!ids.has(edge.from) || !ids.has(edge.to)) return { ok: false, reason: `dangling semantic edge ${edge.id}` };
+    const metadata = Object.fromEntries(Object.entries(edge).filter(([key]) => !['id','kind','from','to'].includes(key)));
+    const expectedEdgeId = stableId(graph.sourceDigest, 'edge', edge.kind, edge.from, edge.to, JSON.stringify(metadata));
+    if (edge.id !== expectedEdgeId) return { ok: false, reason: `semantic edge identity mismatch ${edge.id}` };
+    edgeIds.add(edge.id);
+  }
+
   const { digest: actual, ...body } = graph;
   const expected = digest(body);
-  return { ok: actual === expected, reason: actual === expected ? null : 'semantic graph digest mismatch', expectedDigest: expected };
+  if (typeof actual !== 'string' || actual !== expected) return { ok: false, reason: 'semantic graph digest mismatch', expectedDigest: expected };
+  return { ok: true, reason: null, expectedDigest: expected };
 }
 
 function literalType(value) {
